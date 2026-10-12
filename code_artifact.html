@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <!-- 更新 Viewport：鎖定縮放，防止在 iOS 上點擊輸入框時畫面被放大 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>進階期權計算機 (Black-Scholes)</title>
+    
+    <!-- === iOS App (Web App) 專屬設定 === -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <!-- 讓頂部狀態列變為透明/深色，融入 App -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="期權計算">
+    <!-- iOS 桌面圖示 (這裡使用一個免費的圖標作為佔位符，您可以替換成自己的圖片連結) -->
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2933/2933116.png">
+
+    <!-- 引入 Tailwind CSS 用於快速且現代的 UI 設計 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Chart.js 用於繪製收益圖表 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- 引入 FontAwesome 圖標 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3b82f6', // Blue 500
+                        success: '#22c55e', // Green 500
+                        danger: '#ef4444',  // Red 500
+                        surface: '#1e293b', // Slate 800 (Dark mode surface)
+                        background: '#0f172a' // Slate 900 (Dark mode bg)
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* 自定義滾動條與滑桿樣式 */
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f3f4f6; color: #1f2937; }
+        
+        input[type=range] {
+            -webkit-appearance: none; width: 100%; background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: #3b82f6; cursor: pointer; margin-top: -6px; box-shadow: 0 0 2px rgba(0,0,0,0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 4px; cursor: pointer; background: #d1d5db; border-radius: 2px;
+        }
+        input[type=range]:focus { outline: none; }
+        
+        .tooltip-container { position: relative; display: inline-block; }
+        .tooltip-text {
+            visibility: hidden; width: max-content; max-width: 250px; background-color: #374151; color: #fff; text-align: left; border-radius: 6px; padding: 8px 12px; position: absolute; z-index: 10; bottom: 125%; left: 50%; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; font-size: 0.875rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); font-weight: normal;
+        }
+        .tooltip-container:hover .tooltip-text { visibility: visible; opacity: 1; }
+        
+        /* 數值變化時的閃爍動畫 */
+        @keyframes highlight {
+            0% { color: #3b82f6; }
+            100% { color: inherit; }
+        }
+        .value-updated { animation: highlight 0.5s ease-out; }
+        
+        /* 針對 iOS 瀏海屏/動態島 (Safe Area) 的頂部適配 */
+        .ios-safe-padding { 
+            padding-top: max(1rem, env(safe-area-inset-top)); 
+        }
+    </style>
+</head>
+<body class="antialiased min-h-screen">
+
+    <!-- 加入 ios-safe-padding 適配 iPhone 頂部空間 -->
+    <header class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50 ios-safe-padding">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-4 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600 text-white p-2 rounded-lg">
+                    <i class="fa-solid fa-calculator text-xl"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-gray-900 tracking-tight">進階期權組合計算機 <span class="text-sm font-normal text-gray-500 ml-2">Multi-leg Strategy Builder</span></h1>
+            </div>
+            <div>
+                <a href="#" class="text-sm text-blue-600 hover:text-blue-800 font-medium"><i class="fa-solid fa-circle-info mr-1"></i> 策略說明</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            <!-- 左側：參數與策略設定 -->
+            <div class="lg:col-span-6 space-y-6">
+                <!-- 1. 全局參數 (正股) -->
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                    <h2 class="text-lg font-semibold text-gray-800 mb-5 flex items-center gap-2">
+                        <i class="fa-solid fa-chart-simple text-blue-500"></i> 標的資產 (Underlying)
+                    </h2>
+                    
+                    <!-- 股票選擇與獲取報價 -->
+                    <div class="mb-5 bg-gray-50 p-3 rounded-lg border border-gray-200">
+                        <div class="flex gap-2 items-end">
+                            <div class="flex-grow">
+                                <label class="text-xs font-medium text-gray-600 block mb-1">輸入或選擇代號 (US/HK)</label>
+                                <input type="text" id="stock-selector" list="stock-options" placeholder="例如: AAPL 或 0700.HK" class="w-full text-sm border-gray-300 rounded-md shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 bg-white uppercase" onkeypress="if(event.key === 'Enter') fetchYahooData()">
+                                <datalist id="stock-options">
+                                    <option value="SPY">S&P 500 ETF</option>
+                                    <option value="QQQ">Nasdaq 100 ETF</option>
+                                    <option value="AAPL">Apple</option>
+                                    <option value="TSLA">Tesla</option>
+                                    <option value="NVDA">Nvidia</option>
+                                    <option value="AMZN">Amazon</option>
+                                    <option value="META">Meta</option>
+                                    <option value="0700.HK">騰訊 (Tencent)</option>
+                                    <option value="9988.HK">阿里巴巴 (Alibaba)</option>
+                                    <option value="0388.HK">港交所 (HKEX)</option>
+                                    <option value="2800.HK">盈富基金</option>
+                                    <option value="0005.HK">匯豐 (HSBC)</option>
+                                </datalist>
+                            </div>
+                            <button id="fetch-btn" onclick="fetchYahooData()" class="px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 transition-colors flex items-center gap-1 min-w-[85px] justify-center shadow-sm">
+                                <i class="fa-solid fa-cloud-arrow-down"></i> 獲取
+                            </button>
+                        </div>
+                        <div id="fetch-status" class="text-xs text-gray-500 mt-2 h-4 hidden"></div>
+                    </div>
+                    
+                    <div class="mb-5">
+                        <div class="flex justify-between mb-1">
+                            <label class="text-sm font-medium text-gray-700">現價 (Current Price)</label>
+                            <div class="flex items-center">
+                                <span class="text-gray-500 text-sm mr-1">$</span>
+                                <input type="number" id="global-stock" value="100" class="w-24 text-right text-sm border-gray-300 rounded-md shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200" oninput="syncGlobalSlider()">
+                            </div>
+                        </div>
+                        <input type="range" id="global-stock-slider" min="1" max="500" value="100" step="1" oninput="syncGlobalInput()">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4 pt-2 border-t border-gray-100">
+                        <div>
+                            <label class="text-xs font-medium text-gray-600 block mb-1">無風險利率 (Rate)</label>
+                            <div class="flex items-center bg-gray-50 rounded-md px-2 py-1 border border-gray-200">
+                                <input type="number" id="global-rate" value="5" step="0.1" class="w-full bg-transparent border-none focus:ring-0 text-right text-sm p-0" oninput="calculatePortfolio()">
+                                <span class="text-gray-500 text-sm ml-1">%</span>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs font-medium text-gray-600 block mb-1">股息率 (Dividend)</label>
+                            <div class="flex items-center bg-gray-50 rounded-md px-2 py-1 border border-gray-200">
+                                <input type="number" id="global-dividend" value="0" step="0.1" class="w-full bg-transparent border-none focus:ring-0 text-right text-sm p-0" oninput="calculatePortfolio()">
+                                <span class="text-gray-500 text-sm ml-1">%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. 多腳期權建構器 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                            <i class="fa-solid fa-layer-group text-purple-500"></i> 期權組合 (Legs Builder)
+                        </h2>
+                        <select id="preset-selector" onchange="applyPreset(this.value)" class="text-sm border-gray-300 rounded-md shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 bg-gray-50">
+                            <option value="">-- 載入策略範本 --</option>
+                            <optgroup label="基礎策略 (Basic)">
+                                <option value="longCall">買入認購 (Long Call)</option>
+                                <option value="longPut">買入認沽 (Long Put)</option>
+                                <option value="shortCall">賣出認購 (Short Call)</option>
+                                <option value="shortPut">賣出認沽 (Short Put - Cash Secured)</option>
+                            </optgroup>
+                            <optgroup label="跨價組合 (Spreads)">
+                                <option value="bullCall">牛市認購 (Bull Call Spread - Debit)</option>
+                                <option value="bullPut">牛市認沽 (Bull Put Spread - Credit)</option>
+                                <option value="bearCall">熊市認購 (Bear Call Spread - Credit)</option>
+                                <option value="bearPut">熊市認沽 (Bear Put Spread - Debit)</option>
+                            </optgroup>
+                            <optgroup label="波動率策略 (Volatility)">
+                                <option value="straddle">買入馬鞍 (Long Straddle)</option>
+                                <option value="strangle">買入勒束 (Long Strangle)</option>
+                                <option value="shortStraddle">賣出馬鞍 (Short Straddle)</option>
+                                <option value="shortStrangle">賣出勒束 (Short Strangle)</option>
+                                <option value="ironCondor">鐵兀鷹 (Iron Condor)</option>
+                                <option value="ironButterfly">鐵蝴蝶 (Iron Butterfly)</option>
+                            </optgroup>
+                        </select>
+                    </div>
+
+                    <!-- 期權腳列表 -->
+                    <div id="legs-container" class="space-y-3 mb-4 max-h-[400px] overflow-y-auto pr-1">
+                        <!-- 動態生成的 Legs 會在這裡 -->
+                    </div>
+
+                    <button onclick="addLeg()" class="w-full py-2 border-2 border-dashed border-gray-300 rounded-lg text-gray-500 hover:text-blue-600 hover:border-blue-400 hover:bg-blue-50 transition-colors text-sm font-medium flex justify-center items-center gap-2">
+                        <i class="fa-solid fa-plus"></i> 新增期權腳 (Add Leg)
+                    </button>
+                </div>
+            </div>
+
+            <!-- 右側：結果與圖表 -->
+            <div class="lg:col-span-6 space-y-6">
+                
+                <!-- 綜合財務摘要 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 relative overflow-hidden">
+                    <div class="absolute top-0 right-0 bg-blue-100 text-blue-800 px-4 py-1 rounded-bl-xl text-xs font-bold tracking-wider">PORTFOLIO SUMMARY</div>
+                    <h3 class="text-gray-500 text-sm font-medium mb-1">組合淨期權金 (Net Premium)</h3>
+                    <div class="flex items-baseline gap-2 mb-4">
+                        <span class="text-4xl font-bold" id="net-premium-value">$0.00</span>
+                        <span class="text-sm font-medium rounded px-2 py-0.5" id="net-premium-badge">--</span>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 border-t border-gray-100 pt-4">
+                        <div>
+                            <div class="text-xs text-gray-500 mb-1">總 Delta (Δ)</div>
+                            <div class="font-semibold text-gray-800" id="port-delta">0.00</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500 mb-1">總 Gamma (Γ)</div>
+                            <div class="font-semibold text-gray-800" id="port-gamma">0.00</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500 mb-1">總 Theta (Θ)</div>
+                            <div class="font-semibold text-gray-800" id="port-theta">0.00</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500 mb-1">總 Vega (ν)</div>
+                            <div class="font-semibold text-gray-800" id="port-vega">0.00</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500 mb-1">總 Rho (ρ)</div>
+                            <div class="font-semibold text-gray-800" id="port-rho">0.00</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 組合盈虧圖表 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                    <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                        <i class="fa-solid fa-chart-area text-green-500"></i> 到期日損益圖表 (Payoff Chart)
+                    </h2>
+                    
+                    <div class="relative h-72 w-full">
+                        <canvas id="portfolioChart"></canvas>
+                    </div>
+                    <div class="flex justify-between items-center mt-3 text-xs text-gray-500">
+                        <span>X軸：結算時正股價格</span>
+                        <span>Y軸：組合淨損益 (PnL)</span>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // 常態分佈累積函數 (CDF) 近似算法
+        function standardNormalCDF(x) {
+            const t = 1 / (1 + 0.2316419 * Math.abs(x));
+            const d = 0.3989423 * Math.exp(-x * x / 2);
+            let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+            if (x > 0) p = 1 - p;
+            return p;
+        }
+
+        // 常態分佈概率密度函數 (PDF)
+        function standardNormalPDF(x) {
+            return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+        }
+
+        // Black-Scholes 核心計算模型
+        function calculateBlackScholes(S, K, T, r, q, v) {
+            if (T <= 0) {
+                let callPrice = Math.max(0, S - K);
+                let putPrice = Math.max(0, K - S);
+                return {
+                    call: { price: callPrice, delta: S > K ? 1 : 0, gamma: 0, theta: 0, vega: 0, rho: 0 },
+                    put: { price: putPrice, delta: S < K ? -1 : 0, gamma: 0, theta: 0, vega: 0, rho: 0 }
+                };
+            }
+
+            const d1 = (Math.log(S / K) + (r - q + (v * v) / 2) * T) / (v * Math.sqrt(T));
+            const d2 = d1 - v * Math.sqrt(T);
+
+            const Nd1 = standardNormalCDF(d1);
+            const Nd2 = standardNormalCDF(d2);
+            const N_minus_d1 = standardNormalCDF(-d1);
+            const N_minus_d2 = standardNormalCDF(-d2);
+            const npdf_d1 = standardNormalPDF(d1);
+
+            const exp_qT = Math.exp(-q * T);
+            const exp_rT = Math.exp(-r * T);
+
+            const callPrice = S * exp_qT * Nd1 - K * exp_rT * Nd2;
+            const putPrice = K * exp_rT * N_minus_d2 - S * exp_qT * N_minus_d1;
+
+            const callDelta = exp_qT * Nd1;
+            const putDelta = exp_qT * (Nd1 - 1);
+
+            const gamma = (exp_qT * npdf_d1) / (S * v * Math.sqrt(T));
+            const vega = (S * exp_qT * npdf_d1 * Math.sqrt(T)) / 100;
+
+            const term1 = -(S * v * exp_qT * npdf_d1) / (2 * Math.sqrt(T));
+            const callTheta = (term1 - r * K * exp_rT * Nd2 + q * S * exp_qT * Nd1) / 365;
+            const putTheta = (term1 + r * K * exp_rT * N_minus_d2 - q * S * exp_qT * N_minus_d1) / 365;
+
+            const callRho = (K * T * exp_rT * Nd2) / 100;
+            const putRho = (-K * T * exp_rT * N_minus_d2) / 100;
+
+            return {
+                call: { price: callPrice, delta: callDelta, gamma: gamma, theta: callTheta, vega: vega, rho: callRho },
+                put: { price: putPrice, delta: putDelta, gamma: gamma, theta: putTheta, vega: vega, rho: putRho }
+            };
+        }
+
+        // 應用程式狀態管理
+        let legs = [];
+        let nextLegId = 1;
+        let portfolioChartInstance = null;
+
+        // === 日期處理輔助函數 ===
+        function getTodayDate() {
+            const today = new Date();
+            const offset = today.getTimezoneOffset() * 60000;
+            return new Date(today.getTime() - offset).toISOString().split('T')[0];
+        }
+
+        function getFutureDate(days) {
+            const date = new Date();
+            date.setDate(date.getDate() + days);
+            const offset = date.getTimezoneOffset() * 60000;
+            return new Date(date.getTime() - offset).toISOString().split('T')[0];
+        }
+
+        function calculateDaysBetween(startDateStr, endDateStr) {
+            const start = new Date(startDateStr);
+            const end = new Date(endDateStr);
+            const diffTime = end - start;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            return Math.max(0.001, diffDays); // 防止 0 或負數導致公式錯誤
+        }
+
+        async function fetchYahooData() {
+            const selector = document.getElementById('stock-selector');
+            let symbol = selector.value.trim().toUpperCase();
+            
+            // 避免使用者誤輸入了描述文字，提取第一段代碼
+            symbol = symbol.split(' ')[0];
+            
+            const statusEl = document.getElementById('fetch-status');
+            
+            if (!symbol) {
+                statusEl.classList.remove('hidden');
+                statusEl.innerHTML = `<span class="text-red-500"><i class="fa-solid fa-triangle-exclamation"></i> 請輸入股票代號</span>`;
+                setTimeout(() => { statusEl.classList.add('hidden'); }, 3000);
+                return;
+            }
+
+            const btn = document.getElementById('fetch-btn');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 載入中';
+            btn.disabled = true;
+            statusEl.classList.remove('hidden');
+            statusEl.innerHTML = `<span class="text-blue-500"><i class="fa-solid fa-circle-notch fa-spin"></i> 正在獲取 ${symbol} 即時報價...</span>`;
+
+            try {
+                // 使用 Yahoo v8 chart API 繞過部分嚴格的 Cookie 限制，並使用 /raw 直接獲取 JSON
+                const queryUrl = encodeURIComponent(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`);
+                const proxyUrl = `https://api.allorigins.win/raw?url=${queryUrl}`;
+                
+                const response = await fetch(proxyUrl);
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+
+                if (data.chart && data.chart.result && data.chart.result.length > 0) {
+                    const meta = data.chart.result[0].meta;
+                    const price = meta.regularMarketPrice;
+                    // Chart API 通常不含股息率，重置為0或保留現狀
+                    const divYield = 0; 
+                    
+                    // 動態調整滑桿最大值，防止溢出
+                    const slider = document.getElementById('global-stock-slider');
+                    if (price > parseFloat(slider.max) * 0.8) {
+                        slider.max = Math.ceil(price * 1.5);
+                    }
+                    if (price < parseFloat(slider.max) * 0.1) {
+                        slider.max = Math.ceil(price * 3);
+                    }
+
+                    document.getElementById('global-stock').value = price.toFixed(2);
+                    document.getElementById('global-stock-slider').value = price.toFixed(2);
+                    document.getElementById('global-dividend').value = divYield.toFixed(2);
+                    
+                    statusEl.innerHTML = `<span class="text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> 成功更新：現價 $${price.toFixed(2)}</span>`;
+                    
+                    calculatePortfolio();
+                } else {
+                    throw new Error('No data returned');
+                }
+            } catch (error) {
+                console.error("Fetch error:", error);
+                statusEl.innerHTML = `<span class="text-red-500"><i class="fa-solid fa-triangle-exclamation"></i> 獲取失敗，請檢查網路或手動輸入。</span>`;
+            } finally {
+                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> 獲取';
+                btn.disabled = false;
+                
+                // 幾秒後隱藏提示
+                setTimeout(() => {
+                    statusEl.classList.add('hidden');
+                }, 5000);
+            }
+        }
+
+        function syncGlobalSlider() {
+            const val = document.getElementById('global-stock').value;
+            document.getElementById('global-stock-slider').value = val;
+            calculatePortfolio();
+        }
+
+        function syncGlobalInput() {
+            const val = document.getElementById('global-stock-slider').value;
+            document.getElementById('global-stock').value = val;
+            calculatePortfolio();
+        }
+
+        // 新增一個空白的期權腳
+        function addLeg(customLeg = null) {
+            const currentStock = parseFloat(document.getElementById('global-stock').value) || 100;
+            const defaultExpiry = getFutureDate(30);
+            
+            const newLeg = customLeg || {
+                id: nextLegId++,
+                action: 'buy',
+                type: 'call',
+                strike: currentStock,
+                qty: 1,
+                expiryDate: defaultExpiry,
+                days: 30,
+                iv: 30,
+                calcPremium: 0 // 用於存儲計算結果
+            };
+            legs.push(newLeg);
+            renderLegs();
+            calculatePortfolio();
+        }
+
+        // 移除期權腳
+        function removeLeg(id) {
+            legs = legs.filter(leg => leg.id !== id);
+            renderLegs();
+            calculatePortfolio();
+        }
+
+        // 更新個別期權腳參數
+        function updateLegParam(id, field, value) {
+            const legIndex = legs.findIndex(l => l.id === id);
+            if (legIndex !== -1) {
+                // 類型轉換保護
+                if (['strike', 'qty', 'iv'].includes(field)) {
+                    legs[legIndex][field] = parseFloat(value) || 0;
+                } else if (field === 'expiryDate') {
+                    legs[legIndex].expiryDate = value;
+                    legs[legIndex].days = calculateDaysBetween(getTodayDate(), value);
+                } else {
+                    legs[legIndex][field] = value;
+                }
+                calculatePortfolio();
+            }
+        }
+
+        // 渲染期權腳 HTML
+        function renderLegs() {
+            const container = document.getElementById('legs-container');
+            container.innerHTML = '';
+
+            if (legs.length === 0) {
+                container.innerHTML = `<div class="text-center py-6 text-gray-400 text-sm italic">無期權腳，點擊下方按鈕新增。</div>`;
+                return;
+            }
+
+            legs.forEach((leg) => {
+                // 顏色邏輯：買(藍)、賣(紅)
+                const actionColorClass = leg.action === 'buy' ? 'bg-blue-50 border-blue-200' : 'bg-red-50 border-red-200';
+                const premiumSign = leg.action === 'buy' ? '-' : '+';
+                const premiumColor = leg.action === 'buy' ? 'text-red-500' : 'text-green-600';
+                
+                const legHtml = `
+                <div class="relative flex flex-col sm:flex-row flex-wrap items-start sm:items-center gap-3 p-3 rounded-xl border ${actionColorClass} transition-all">
+                    
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <select onchange="updateLegParam(${leg.id}, 'action', this.value)" class="text-sm font-medium border-gray-300 rounded focus:border-blue-300 focus:ring-0 ${leg.action==='buy'?'text-blue-700':'text-red-700'}">
+                            <option value="buy" ${leg.action==='buy'?'selected':''}>買入</option>
+                            <option value="sell" ${leg.action==='sell'?'selected':''}>賣出</option>
+                        </select>
+                        
+                        <select onchange="updateLegParam(${leg.id}, 'type', this.value)" class="text-sm font-medium border-gray-300 rounded focus:border-blue-300 focus:ring-0">
+                            <option value="call" ${leg.type==='call'?'selected':''}>Call</option>
+                            <option value="put" ${leg.type==='put'?'selected':''}>Put</option>
+                        </select>
+                    </div>
+
+                    <div class="flex flex-wrap gap-2 flex-grow">
+                        <div class="w-16">
+                            <label class="text-[10px] text-gray-500 block uppercase tracking-wider">行使價</label>
+                            <input type="number" oninput="updateLegParam(${leg.id}, 'strike', this.value)" value="${leg.strike}" class="w-full p-1 text-sm border-gray-300 rounded shadow-sm focus:ring-1 focus:ring-blue-300">
+                        </div>
+                        <div class="w-32">
+                            <label class="text-[10px] text-gray-500 block uppercase tracking-wider">到期日</label>
+                            <input type="date" onchange="updateLegParam(${leg.id}, 'expiryDate', this.value)" value="${leg.expiryDate}" min="${getTodayDate()}" class="w-full p-1 text-sm border-gray-300 rounded shadow-sm focus:ring-1 focus:ring-blue-300">
+                        </div>
+                        <div class="w-14">
+                            <label class="text-[10px] text-gray-500 block uppercase tracking-wider">IV(%)</label>
+                            <input type="number" oninput="updateLegParam(${leg.id}, 'iv', this.value)" value="${leg.iv}" class="w-full p-1 text-sm border-gray-300 rounded shadow-sm focus:ring-1 focus:ring-blue-300">
+                        </div>
+                        <div class="w-12">
+                            <label class="text-[10px] text-gray-500 block uppercase tracking-wider">數量</label>
+                            <input type="number" oninput="updateLegParam(${leg.id}, 'qty', this.value)" value="${leg.qty}" min="1" class="w-full p-1 text-sm border-gray-300 rounded shadow-sm focus:ring-1 focus:ring-blue-300">
+                        </div>
+                    </div>
+
+                    <div class="ml-auto flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end mt-2 sm:mt-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 sm:border-transparent">
+                        <div class="text-right">
+                            <div class="text-[10px] text-gray-500 uppercase">期權金 (x1)</div>
+                            <div class="text-sm font-bold ${premiumColor}">${premiumSign}$${leg.calcPremium.toFixed(2)}</div>
+                        </div>
+                        <button onclick="removeLeg(${leg.id})" class="text-gray-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors" title="刪除">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </div>
+                </div>
+                `;
+                container.insertAdjacentHTML('beforeend', legHtml);
+            });
+        }
+
+        // 核心計算：遍歷所有期權腳，匯總資料
+        function calculatePortfolio() {
+            const S = parseFloat(document.getElementById('global-stock').value) || 0;
+            const r = (parseFloat(document.getElementById('global-rate').value) || 0) / 100.0;
+            const q = (parseFloat(document.getElementById('global-dividend').value) || 0) / 100.0;
+
+            let portCashflow = 0; // 負代表Debit支出, 正代表Credit收入
+            let portDelta = 0, portGamma = 0, portTheta = 0, portVega = 0, portRho = 0;
+
+            // 計算各別腳位
+            legs.forEach(leg => {
+                const T = leg.days / 365.0;
+                const v = leg.iv / 100.0;
+                
+                const bs = calculateBlackScholes(S, leg.strike, T, r, q, v);
+                const result = leg.type === 'call' ? bs.call : bs.put;
+                
+                leg.calcPremium = result.price; // 存回物件供渲染使用
+
+                const sign = leg.action === 'buy' ? 1 : -1;
+                const multiplier = leg.qty * sign;
+
+                // 現金流計算 (買入支出為負, 賣出收入為正)
+                const cashflow = -result.price * multiplier;
+                portCashflow += cashflow;
+
+                // Greeks 匯總 (線性疊加)
+                portDelta += result.delta * multiplier;
+                portGamma += result.gamma * multiplier;
+                portTheta += result.theta * multiplier;
+                portVega += result.vega * multiplier;
+                portRho += result.rho * multiplier;
+            });
+
+            // 更新介面 (只更新價格部分，不用完全重新渲染 DOM，避免輸入失焦)
+            updateUINumbers(portCashflow, portDelta, portGamma, portTheta, portVega, portRho);
+            
+            // 更新圖表
+            updateChart(S);
+        }
+
+        function updateUINumbers(cashflow, delta, gamma, theta, vega, rho) {
+            const valEl = document.getElementById('net-premium-value');
+            const badgeEl = document.getElementById('net-premium-badge');
+            
+            if (legs.length === 0) {
+                valEl.innerText = "$0.00";
+                valEl.className = "text-4xl font-bold text-gray-400";
+                badgeEl.innerText = "N/A";
+                badgeEl.className = "text-sm font-medium rounded px-2 py-0.5 bg-gray-100 text-gray-500";
+            } else if (cashflow < 0) {
+                // 淨支出 (Debit)
+                valEl.innerText = "-$" + Math.abs(cashflow).toFixed(2);
+                valEl.className = "text-4xl font-bold text-red-600";
+                badgeEl.innerText = "淨支出 (Debit)";
+                badgeEl.className = "text-sm font-medium rounded px-2 py-0.5 bg-red-100 text-red-700";
+            } else {
+                // 淨收入 (Credit)
+                valEl.innerText = "+$" + cashflow.toFixed(2);
+                valEl.className = "text-4xl font-bold text-green-600";
+                badgeEl.innerText = "淨收入 (Credit)";
+                badgeEl.className = "text-sm font-medium rounded px-2 py-0.5 bg-green-100 text-green-800";
+            }
+
+            document.getElementById('port-delta').innerText = delta.toFixed(4);
+            document.getElementById('port-gamma').innerText = gamma.toFixed(4);
+            document.getElementById('port-theta').innerText = theta.toFixed(4);
+            document.getElementById('port-vega').innerText = vega.toFixed(4);
+            document.getElementById('port-rho').innerText = rho.toFixed(4);
+        }
+
+        // 繪製投資組合盈虧圖表
+        function updateChart(S) {
+            const ctx = document.getElementById('portfolioChart').getContext('2d');
+            
+            if (legs.length === 0) {
+                if(portfolioChartInstance) portfolioChartInstance.destroy();
+                portfolioChartInstance = null;
+                return;
+            }
+
+            // 決定 X 軸範圍 (基於行使價與現價)
+            let strikes = legs.map(l => l.strike);
+            strikes.push(S);
+            const minK = Math.min(...strikes);
+            const maxK = Math.max(...strikes);
+            
+            // 範圍稍微向外擴展
+            const minX = minK * 0.7;
+            const maxX = maxK * 1.3;
+            const step = (maxX - minX) / 100;
+            
+            let labels = [];
+            let pnlData = [];
+
+            for (let x = minX; x <= maxX; x += step) {
+                labels.push(x.toFixed(2));
+                
+                let netPnL = 0;
+                // 在到期日時 (T=0)，計算所有期權腳的內在價值與初始成本的差額
+                legs.forEach(leg => {
+                    let intrinsic = 0;
+                    if (leg.type === 'call') {
+                        intrinsic = Math.max(0, x - leg.strike);
+                    } else {
+                        intrinsic = Math.max(0, leg.strike - x);
+                    }
+                    
+                    const sign = leg.action === 'buy' ? 1 : -1;
+                    // 該腳位的利潤 = (到期價值 - 期初成本) * 買賣方向 * 數量
+                    const legProfit = (intrinsic - leg.calcPremium) * sign * leg.qty;
+                    netPnL += legProfit;
+                });
+                
+                pnlData.push(netPnL);
+            }
+
+            if (portfolioChartInstance) {
+                portfolioChartInstance.data.labels = labels;
+                portfolioChartInstance.data.datasets[0].data = pnlData;
+                // 更新顏色根據盈虧
+                portfolioChartInstance.data.datasets[0].segment = {
+                    borderColor: ctx => ctx.p0.parsed.y < 0 ? '#ef4444' : '#22c55e',
+                    backgroundColor: ctx => ctx.p0.parsed.y < 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)'
+                };
+                portfolioChartInstance.update();
+            } else {
+                portfolioChartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: '組合到期損益 (PnL)',
+                            data: pnlData,
+                            fill: true,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            pointHitRadius: 10,
+                            borderWidth: 2,
+                            segment: {
+                                borderColor: ctx => ctx.p0.parsed.y < 0 ? '#ef4444' : '#22c55e',
+                                backgroundColor: ctx => ctx.p0.parsed.y < 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)'
+                            }
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let val = context.parsed.y;
+                                        let prefix = val >= 0 ? '+' : '';
+                                        return `淨損益: ${prefix}$${val.toFixed(2)}`;
+                                    },
+                                    title: function(context) {
+                                        return `結算股價: $${context[0].label}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: '#f3f4f6' },
+                                ticks: { maxTicksLimit: 10 }
+                            },
+                            y: {
+                                grid: { color: '#e5e7eb', zeroLineColor: '#6b7280', zeroLineWidth: 2 },
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // 策略範本載入
+        function applyPreset(preset) {
+            if (!preset) return;
+            
+            const S = parseFloat(document.getElementById('global-stock').value) || 100;
+            legs = []; // 清空現有
+            nextLegId = 1;
+
+            const defaultExpiry = getFutureDate(30);
+            const defaultDays = 30;
+
+            switch(preset) {
+                case 'longCall':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'longPut':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'shortCall':
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'shortPut':
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'straddle':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'strangle':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: parseFloat((S * 0.9).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: parseFloat((S * 1.1).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'shortStraddle':
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'shortStrangle':
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: parseFloat((S * 0.9).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: parseFloat((S * 1.1).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'bullCall':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: parseFloat((S * 1.1).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'bullPut':
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: parseFloat((S * 0.9).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'bearCall':
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: parseFloat((S * 1.1).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'bearPut':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: parseFloat((S * 0.9).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'ironCondor':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: parseFloat((S * 0.8).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: parseFloat((S * 0.9).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: parseFloat((S * 1.1).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: parseFloat((S * 1.2).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+                case 'ironButterfly':
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'put', strike: parseFloat((S * 0.9).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'put', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'sell', type: 'call', strike: S, qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    legs.push({ id: nextLegId++, action: 'buy', type: 'call', strike: parseFloat((S * 1.1).toFixed(2)), qty: 1, expiryDate: defaultExpiry, days: defaultDays, iv: 30, calcPremium: 0 });
+                    break;
+            }
+
+            // 重置 selector
+            document.getElementById('preset-selector').value = "";
+            
+            // 必須先計算一次價格，再渲染，這樣渲染時才有正確的 premium
+            legs.forEach(leg => {
+                const T = leg.days / 365.0;
+                const v = leg.iv / 100.0;
+                const bs = calculateBlackScholes(S, leg.strike, T, 0.05, 0, v);
+                leg.calcPremium = leg.type === 'call' ? bs.call.price : bs.put.price;
+            });
+            
+            renderLegs();
+            calculatePortfolio();
+        }
+
+        // 初始化：載入預設的 Long Call
+        window.onload = function() {
+            applyPreset('longCall');
+            // 監聽 container 內的 input blur 事件來更新期權金顯示
+            document.getElementById('legs-container').addEventListener('change', function(e) {
+                if (e.target.tagName.toLowerCase() === 'input') {
+                    renderLegs(); // 更新數值顯示
+                    // render 內部沒有重新計算 portfolio，但前面 oninput 已經計算過了
+                }
+            });
+        };
+
+    </script>
+</body>
+</html>
